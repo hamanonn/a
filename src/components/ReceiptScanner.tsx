@@ -1,5 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, CheckCircle2, List, Trash2, CalendarDays, Camera } from 'lucide-react';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { functions } from '../config/firebase'; // 他人のプロジェクト用firebaseConfigで初期化したものをimport
 import { generateUniqueId } from '../utils/generateUniqueId';
 
 // ... (interfaceは変更なし)
@@ -25,20 +27,61 @@ const ReceiptScanner: React.FC<ReceiptScannerProps> = ({ setCurrentView }) => {
   const scanReceipt = async (imageFile: File) => {
     setIsScanning(true);
     try {
-      const formData = new FormData();
-      formData.append('receiptImage', imageFile);
+      // --- 本番用Cloud Functions呼び出し（後で有効化） ---
+      // // ファイルをBase64に変換
+      // const toBase64 = (file: File) =>
+      //   new Promise<string>((resolve, reject) => {
+      //     const reader = new FileReader();
+      //     reader.onload = () => resolve((reader.result as string).split(',')[1]);
+      //     reader.onerror = reject;
+      //     reader.readAsDataURL(file);
+      //   });
+      // const base64Image = await toBase64(imageFile);
+      // const recognizeText = httpsCallable(functions, 'recognizeTextFromImage');
+      // const result = await recognizeText({ image: base64Image });
+      // const text: string = (result.data as any).text || '';
+      // const lines = text.split('\n').filter(line => line.trim() !== '');
+      // const items = lines.map((line, idx) => {
+      //   const match = line.match(/(.+?)\s+(\d+)/);
+      //   return match ? {
+      //     id: generateUniqueId(),
+      //     name: match[1],
+      //     price: Number(match[2]),
+      //     quantity: 1,
+      //     teamaedori: false,
+      //     expiryDate: '',
+      //   } : null;
+      // }).filter(Boolean) as ScannedItem[];
+      // setScannedItems(items);
 
-      const response = await fetch('http://localhost:3001/api/scan-receipt', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error('API通信エラー');
-      }
-
-      const data = await response.json();
-      setScannedItems(data.items);
+      // --- ダミーデータ返却 ---
+      const dummyItems: ScannedItem[] = [
+        {
+          id: generateUniqueId(),
+          name: '牛乳',
+          price: 120,
+          quantity: 1,
+          teamaedori: false,
+          expiryDate: '',
+        },
+        {
+          id: generateUniqueId(),
+          name: 'ヨーグルト',
+          price: 98,
+          quantity: 1,
+          teamaedori: false,
+          expiryDate: '',
+        },
+        {
+          id: generateUniqueId(),
+          name: 'チーズ',
+          price: 180,
+          quantity: 1,
+          teamaedori: false,
+          expiryDate: '',
+        },
+      ];
+      setScannedItems(dummyItems);
     } catch (error) {
       console.error('スキャン中にエラーが発生しました:', error);
     } finally {
