@@ -1,11 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-
-// 開発環境用のモックユーザー型
-interface MockUser {
-  uid: string;
-  email: string;
-  displayName: string;
-}
+import { onAuthStateChanged, User, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { auth, db } from '../config/firebase';
 
 interface UserProfile {
   uid: string;
@@ -14,24 +10,24 @@ interface UserProfile {
   totalPoints: number;
   totalReduction: number; // kg単位
   rank: string;
-  createdAt: Date;
+  createdAt: any; // FirestoreのTimestamp型を想定
 }
 
 interface AuthContextType {
-  currentUser: MockUser | null;
+  currentUser: User | null;
   userProfile: UserProfile | null;
+  loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, displayName: string) => Promise<void>;
   logout: () => Promise<void>;
-  loading: boolean;
   updateUserProfile: (data: Partial<UserProfile>) => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextType | null>(null);
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
+  if (context === undefined) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
@@ -46,147 +42,86 @@ const getRankByPoints = (points: number): string => {
 };
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<MockUser | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // 開発環境用のモック認証システム
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      if (user) {
+        await fetchUserProfile(user);
+      } else {
+        setUserProfile(null);
+      }
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const fetchUserProfile = async (user: User) => {
+    const userRef = doc(db, 'users', user.uid);
+    const docSnap = await getDoc(userRef);
+    if (docSnap.exists()) {
+      setUserProfile(docSnap.data() as UserProfile);
+    } else {
+      // Firestoreにプロフィールがない場合（例：旧システムからの移行など）
+      // ここでは新規作成時の処理に任せるため、nullのままにするか、
+      // もしくは基本的なプロフィールを作成することも可能
+      console.log("No such user profile!");
+    }
+  };
+
   const login = async (email: string, password: string) => {
-    // バリデーション
-    if (!email || !password) {
-      throw new Error('メールアドレスとパスワードを入力してください');
-    }
-    
-    // ローカルストレージから既存ユーザーを確認
-    const users = JSON.parse(localStorage.getItem('eco_point_users') || '{}');
-    const user = users[email];
-    
-    if (!user || user.password !== password) {
-      const error = new Error('メールアドレスまたはパスワードが間違っています');
-      (error as any).code = 'auth/user-not-found';
-      throw error;
-    }
-    
-    const mockUser: MockUser = {
-      uid: user.uid,
-      email: user.email,
-      displayName: user.displayName
-    };
-    
-    setCurrentUser(mockUser);
-    localStorage.setItem('eco_point_current_user', JSON.stringify(mockUser));
+    await signInWithEmailAndPassword(auth, email, password);
   };
 
   const register = async (email: string, password: string, displayName: string) => {
-    // バリデーション
-    if (!email || !password || !displayName) {
-      const error = new Error('すべての項目を入力してください');
-      (error as any).code = 'auth/invalid-email';
-      throw error;
-    }
+    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+    const user = userCredential.user;
+
+    // Firestoreにユーザープロフィールを保存
+    const newUserProfile: UserProfile = {
+      uid: user.uid,
+      email: user.email || '',
+      displayName,
+      totalPoints: 0,
+      totalReduction: 0,
+      rank: 'エコビギナー',
+      createdAt: serverTimestamp(),
+    };
     
-    if (password.length < 6) {
-      const error = new Error('パスワードは6文字以上で入力してください');
-      (error as any).code = 'auth/weak-password';
-      throw error;
-    }
-    
-    // 既存ユーザーチェック
-    const users = JSON.parse(localStorage.getItem('eco_point_users') || '{}');
-    if (users[email]) {
-      const error = new Error('このメールアドレスは既に使用されています');
-      (error as any).code = 'auth/email-already-in-use';
-      throw error;
-    }
-    
-    // 新規ユーザー作成
-    const uid = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    const newUser = { uid, email, displayName, password };
-    
-    users[email] = newUser;
-    localStorage.setItem('eco_point_users', JSON.stringify(users));
-    
-    // ログイン状態にする
-    await login(email, password);
+    await setDoc(doc(db, 'users', user.uid), newUserProfile);
+    setUserProfile(newUserProfile);
   };
 
   const logout = async () => {
-    setCurrentUser(null);
-    setUserProfile(null);
-    localStorage.removeItem('eco_point_current_user');
+    await signOut(auth);
   };
 
   const updateUserProfile = async (data: Partial<UserProfile>) => {
-    if (!currentUser || !userProfile) return;
+    if (!currentUser) return;
     
-    const updatedProfile = { ...userProfile, ...data };
+    const userRef = doc(db, 'users', currentUser.uid);
+    const updatedData = { ...data };
+
     if (data.totalPoints !== undefined) {
-      updatedProfile.rank = getRankByPoints(data.totalPoints);
+      updatedData.rank = getRankByPoints(data.totalPoints);
     }
-    
-    localStorage.setItem(`user_${currentUser.uid}`, JSON.stringify(updatedProfile));
-    setUserProfile(updatedProfile);
+
+    await setDoc(userRef, updatedData, { merge: true });
+    // stateを更新してUIに即時反映
+    setUserProfile(prevProfile => prevProfile ? { ...prevProfile, ...updatedData } : null);
   };
 
-  const fetchUserProfile = async (user: MockUser) => {
-    try {
-      const stored = localStorage.getItem(`user_${user.uid}`);
-      if (stored) {
-        const data = JSON.parse(stored) as UserProfile;
-        setUserProfile(data);
-      } else {
-        // 初回ログイン時のデフォルトプロフィール
-        const defaultProfile: UserProfile = {
-          uid: user.uid,
-          email: user.email,
-          displayName: user.displayName,
-          totalPoints: 0,
-          totalReduction: 0,
-          rank: 'エコビギナー',
-          createdAt: new Date()
-        };
-        localStorage.setItem(`user_${user.uid}`, JSON.stringify(defaultProfile));
-        setUserProfile(defaultProfile);
-      }
-    } catch (error) {
-      console.error('Error fetching user profile:', error);
-    }
-  };
-
-  useEffect(() => {
-    // currentUserが変更されたときにプロフィールを取得
-    if (currentUser && !userProfile) {
-      fetchUserProfile(currentUser);
-    }
-  }, [currentUser]);
-
-  useEffect(() => {
-    // 初期化時にローカルストレージから現在のユーザーを復元
-    const initAuth = async () => {
-      try {
-        const stored = localStorage.getItem('eco_point_current_user');
-        if (stored) {
-          const user = JSON.parse(stored) as MockUser;
-          setCurrentUser(user);
-          await fetchUserProfile(user);
-        }
-      } catch (error) {
-        console.error('Auth initialization error:', error);
-      }
-      setLoading(false);
-    };
-
-    initAuth();
-  }, []);
-
-  const value: AuthContextType = {
+  const value = {
     currentUser,
     userProfile,
+    loading,
     login,
     register,
     logout,
-    loading,
-    updateUserProfile
+    updateUserProfile,
   };
 
   return (
